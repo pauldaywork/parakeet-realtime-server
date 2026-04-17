@@ -1,0 +1,15 @@
+# Rust build artefacts
+target/
+
+# Script output (build, fetched CUDA DLLs, downloaded models)
+dist/
+
+# Example builds
+examples/web-app/dist/
+examples/web-app/node_modules/
+
+# Editor + OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
