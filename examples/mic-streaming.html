@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>parakeet-realtime-server — mic streaming demo</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    button { font-size: 1rem; padding: 0.5rem 1rem; cursor: pointer; }
+    .final { color: #0a0; }
+    .partial { color: #888; font-style: italic; }
+    #transcript { white-space: pre-wrap; border: 1px solid #ccc; padding: 1rem; min-height: 10rem; margin-top: 1rem; }
+    #status { margin-left: 1rem; font-size: 0.9rem; color: #555; }
+  </style>
+</head>
+<body>
+  <h1>parakeet-realtime-server demo</h1>
+  <p>Start the server with <code>parakeet-realtime-server.exe --port 9005</code>, then click Record.</p>
+  <button id="toggle">Record</button>
+  <span id="status">idle</span>
+  <div id="transcript"></div>
+
+  <script>
+    const WS_URL = "ws://127.0.0.1:9005/stream";
+    const toggleBtn = document.getElementById("toggle");
+    const statusEl  = document.getElementById("status");
+    const transcriptEl = document.getElementById("transcript");
+
+    let mediaStream = null;
+    let audioCtx = null;
+    let ws = null;
+    let recording = false;
+    const finals = [];
+    let partial = "";
+
+    function render() {
+      const parts = finals.map(t => `<span class="final">${escapeHtml(t)}</span>`);
+      if (partial) parts.push(`<span class="partial">${escapeHtml(partial)}</span>`);
+      transcriptEl.innerHTML = parts.join("\n");
+    }
+    function escapeHtml(s) { return s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+    async function start() {
+      finals.length = 0; partial = ""; render();
+      statusEl.textContent = "connecting...";
+      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1 } });
+      audioCtx = new AudioContext({ sampleRate: 16000 });
+      const source = audioCtx.createMediaStreamSource(mediaStream);
+
+      // AudioWorklet processor (inline blob — 0-dependency)
+      const workletSrc = `
+        class PcmProcessor extends AudioWorkletProcessor {
+          process(inputs) {
+            const ch = inputs[0]?.[0];
+            if (!ch) return true;
+            const i16 = new Int16Array(ch.length);
+            for (let i = 0; i < ch.length; i++) {
+              const s = Math.max(-1, Math.min(1, ch[i]));
+              i16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+            }
+            this.port.postMessage(i16.buffer, [i16.buffer]);
+            return true;
+          }
+        }
+        registerProcessor("pcm", PcmProcessor);
+      `;
+      const workletBlob = new Blob([workletSrc], { type: "application/javascript" });
+      await audioCtx.audioWorklet.addModule(URL.createObjectURL(workletBlob));
+      const node = new AudioWorkletNode(audioCtx, "pcm");
+      source.connect(node); // graph must have an edge for the worklet to pull
+
+      ws = new WebSocket(WS_URL);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => { statusEl.textContent = "recording..."; };
+      ws.onmessage = (e) => {
+        try {
+          const evt = JSON.parse(typeof e.data === "string" ? e.data : new TextDecoder().decode(e.data));
+          if (evt.type === "partial") { partial = evt.text || ""; render(); }
+          else if (evt.type === "final") { if (evt.text) finals.push(evt.text); partial = ""; render(); }
+        } catch { /* ignore malformed */ }
+      };
+      ws.onclose = () => { statusEl.textContent = "closed"; };
+      ws.onerror = () => { statusEl.textContent = "ws error"; };
+
+      node.port.onmessage = (e) => {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(e.data);
+      };
+
+      recording = true;
+      toggleBtn.textContent = "Stop";
+    }
+
+    function stop() {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        try { ws.send(JSON.stringify({ type: "end" })); } catch {}
+      }
+      ws?.close();
+      mediaStream?.getTracks().forEach(t => t.stop());
+      audioCtx?.close();
+      mediaStream = null; audioCtx = null; ws = null;
+      recording = false;
+      toggleBtn.textContent = "Record";
+      statusEl.textContent = "idle";
+    }
+
+    toggleBtn.addEventListener("click", () => {
+      if (recording) stop();
+      else start().catch(err => { statusEl.textContent = "error: " + err.message; recording = false; toggleBtn.textContent = "Record"; });
+    });
+  </script>
+</body>
+</html>
