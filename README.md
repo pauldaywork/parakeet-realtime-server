@@ -1,4 +1,4 @@
-# parakeet-realtime-server
+# parakeet-realtime-server (Windows)
 
 Streaming HTTP + WebSocket server wrapping NVIDIA Parakeet Realtime EOU
 (120M) via [parakeet-rs](https://github.com/altunenes/parakeet-rs).
